@@ -138,7 +138,7 @@ func main() {
 	klog.InfoS(fmt.Sprintf("starting %s", ua)) // Stmt added to log
 
 	// Kubernetes Client
-	var rc *rest.Config // crate rc variable of type Config which is a struct. See: https://pkg.go.dev/k8s.io/client-go/rest#Config
+	var rc *rest.Config // create rc variable of type Config which is a struct. See: https://pkg.go.dev/k8s.io/client-go/rest#Config
 	var err error
 	if *kubeconfig != "" {
 		klog.V(5).InfoS("using kubeconfig", "path", *kubeconfig)
