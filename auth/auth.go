@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package auth includes obtains auth tokens for workload identity.
-package auth
+package auth //	For more details see: https://pkg.go.dev/github.com/GoogleCloudPlatform/secrets-store-csi-driver-provider-gcp/auth
 
 import (
 	"bytes"
@@ -28,14 +28,18 @@ import (
 	"strings"
 	"time"
 
+	/*
+		Package metadata provides access to Google Compute Engine (GCE) metadata and API service accounts.
+		For more details see: https://pkg.go.dev/cloud.google.com/go/compute/metadata
+	*/
 	"cloud.google.com/go/compute/metadata"
 	credentials "cloud.google.com/go/iam/credentials/apiv1"
-	"cloud.google.com/go/iam/credentials/apiv1/credentialspb"
+	"cloud.google.com/go/iam/credentials/apiv1/credentialspb" //	For more details see: https://pkg.go.dev/cloud.google.com/go/iam/credentials/apiv1/credentialspb#section-documentation
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"github.com/GoogleCloudPlatform/secrets-store-csi-driver-provider-gcp/config"
 	"github.com/googleapis/gax-go/v2"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
+	"golang.org/x/oauth2/google" //	For more details see:  https://pkg.go.dev/golang.org/x/oauth2/google
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/oauth"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -58,10 +62,20 @@ const (
 	externalAccountKey = "external_account"
 )
 
+/*
+	Structures in Golang can be written to files like JSON for storing data on a hard drive or for sending over the network.
+	During the definition of structures, additional raw string values know as the field tags may be added to the field declaration which is used as the field name in JSON files. If no additional string value i.e field tag is specified, Go uses the default field name which is used to declare the field in the structure
+*/
+
 // credentialsFile is the unmarshalled representation of a credentials file.
 type credentialsFile struct {
 	Type string `json:"type"`
 	// External Account fields
+	/*
+		Audiences are the intendend audiences of the token. A recipient of a
+		token must identify themself with an identifier in the list of
+		audiences of the token, and otherwise should reject the token.
+	*/
 	Audience string `json:"audience"`
 }
 
@@ -85,7 +99,7 @@ func (c *Client) TokenSource(ctx context.Context, cfg *config.MountConfig) (oaut
 		if err != nil {
 			return nil, fmt.Errorf("unable to obtain workload identity auth: %v", err)
 		}
-		return oauth2.StaticTokenSource(token), nil
+		return oauth2.StaticTokenSource(token), nil //	StaticTokenSource returns a TokenSource that always returns the same token. Because the provided token t is never refreshed, StaticTokenSource is only useful for tokens that never expire.
 	}
 
 	return nil, errors.New("mount configuration has no auth method configured")
@@ -121,7 +135,7 @@ func (c *Client) Token(ctx context.Context, cfg *config.MountConfig) (*oauth2.To
 	klog.V(5).InfoS("workload id configured", "pool", idPool, "provider", idProvider)
 
 	// Get iam.gke.io/gcp-service-account annotation to see if the
-	// identitybindingtoken token should be traded for a GCP SA token.
+	// identitybindingtoken token should be traded for a GCP SA (Service Account) token.
 	// See https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity#creating_a_relationship_between_ksas_and_gsas
 	saResp, err := c.KubeClient.
 		CoreV1().
@@ -133,34 +147,31 @@ func (c *Client) Token(ctx context.Context, cfg *config.MountConfig) (*oauth2.To
 	gcpSA := saResp.Annotations["iam.gke.io/gcp-service-account"]
 	klog.V(5).InfoS("matched service account", "service_account", gcpSA)
 
-	// Request a serviceaccount token for the pod
-	ttl := int64((15 * time.Minute).Seconds())
-	resp, err := c.KubeClient.CoreV1().
-		ServiceAccounts(cfg.PodInfo.Namespace).
-		CreateToken(ctx, cfg.PodInfo.ServiceAccount,
-			&authenticationv1.TokenRequest{
-				Spec: authenticationv1.TokenRequestSpec{
-					ExpirationSeconds: &ttl,
-					Audiences:         []string{idPool},
-					BoundObjectRef: &authenticationv1.BoundObjectReference{
-						Kind:       "Pod", // valid types are pod and secret
-						APIVersion: "v1",
-						Name:       cfg.PodInfo.Name,
-						UID:        cfg.PodInfo.UID,
-					},
-				},
-			},
-			v1.CreateOptions{},
-		)
-	if err != nil {
-		return nil, fmt.Errorf("unable to fetch pod token: %w", err)
+	// Obtain a serviceaccount token for the pod
+	var SATokenVal string
+	if cfg.PodInfo.ServiceAccountTokens != "" {
+		SAToken, err := c.ExtractSAToken(cfg) // calling function to extract token received from driver
+		if err != nil {
+			return nil, fmt.Errorf("unable to fetch SA token from driver: %w", err)
+		}
+		SATokenVal = SAToken.Token
+	} else {
+		SAToken, err := c.GeneratePodSAToken(ctx, cfg, idPool)
+		if err != nil {
+			return nil, fmt.Errorf("unable to fetch pod token: %w", err)
+		}
+		SATokenVal = SAToken.Token
 	}
 
+	fmt.Printf("****************************************************\nAUTH FILE LINE 166\n SATokenVal is:\n%v\n*****************************************************\n\n\n", SATokenVal)
+
 	// Trade the kubernetes token for an identitybindingtoken token.
-	idBindToken, err := tradeIDBindToken(ctx, c.HTTPClient, resp.Status.Token, idPool, idProvider)
+	idBindToken, err := tradeIDBindToken(ctx, c.HTTPClient, SATokenVal, idPool, idProvider)
 	if err != nil {
 		return nil, fmt.Errorf("unable to fetch identitybindingtoken: %w", err)
 	}
+
+	fmt.Printf("****************************************************\nAUTH FILE LINE 174\n IDBindToken is:\n%v\n*****************************************************\n\n\n", idBindToken)
 
 	// If no `iam.gke.io/gcp-service-account` annotation is present the
 	// identitybindingtoken will be used directly, allowing bindings on secrets
@@ -177,6 +188,40 @@ func (c *Client) Token(ctx context.Context, cfg *config.MountConfig) (*oauth2.To
 		return nil, fmt.Errorf("unable to fetch gcp service account token: %w", err)
 	}
 	return &oauth2.Token{AccessToken: gcpSAResp.GetAccessToken()}, nil
+}
+
+func (c *Client) ExtractSAToken(cfg *config.MountConfig) (*authenticationv1.TokenRequestStatus, error) {
+	AudienceTokens := map[string]authenticationv1.TokenRequestStatus{}
+	json.Unmarshal([]byte(cfg.PodInfo.ServiceAccountTokens), &AudienceTokens)
+	for _, v := range AudienceTokens {
+		return &v, nil
+	}
+	return nil, fmt.Errorf("Unable to obtain token from driver")
+}
+
+func (c *Client) GeneratePodSAToken(ctx context.Context, cfg *config.MountConfig, idPool string) (*authenticationv1.TokenRequestStatus, error) {
+	ttl := int64((15 * time.Minute).Seconds())
+	resp, err := c.KubeClient.CoreV1().
+		ServiceAccounts(cfg.PodInfo.Namespace).
+		CreateToken(ctx, cfg.PodInfo.ServiceAccount,
+			&authenticationv1.TokenRequest{
+				Spec: authenticationv1.TokenRequestSpec{
+					ExpirationSeconds: &ttl,
+					Audiences:         []string{idPool},
+					BoundObjectRef: &authenticationv1.BoundObjectReference{
+						Kind:       "Pod", // Pod and secret are the only valid types
+						APIVersion: "v1",
+						Name:       cfg.PodInfo.Name,
+						UID:        cfg.PodInfo.UID,
+					},
+				},
+			},
+			v1.CreateOptions{},
+		)
+	if err != nil {
+		return nil, fmt.Errorf("unable to fetch pod token: %w", err)
+	}
+	return &resp.Status, nil
 }
 
 func (c *Client) gkeWorkloadIdentity(ctx context.Context, cfg *config.MountConfig) (string, string, error) {
@@ -221,7 +266,7 @@ func (c *Client) fleetWorkloadIdentity(ctx context.Context, cfg *config.MountCon
 		return "", "", fmt.Errorf("google: unexpected credentials type: %v, expected: %v", f.Type, externalAccountKey)
 	}
 
-	split := strings.SplitN(f.Audience, ":", 3) // Format of Audience is: identitynamespace:idPool:idProvider
+	split := strings.SplitN(f.Audience, ":", 3) // Audience is the full URL of target service. Its value has the format "identitynamespace:idPool:idProvider"
 	if split == nil || len(split) < 3 {
 		return "", "", fmt.Errorf("google: unexpected audience value: %v", f.Audience)
 	}
@@ -244,7 +289,7 @@ func tradeIDBindToken(ctx context.Context, client *http.Client, k8sToken, idPool
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://securetoken.googleapis.com/v1/identitybindingtoken", bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://securetoken.googleapis.com/v1/identitybindingtoken", bytes.NewBuffer(body)) //	A Request represents an HTTP request received by a server or to be sent by a client. In our case it is to be sent by client.
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +299,9 @@ func tradeIDBindToken(ctx context.Context, client *http.Client, k8sToken, idPool
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Printf("****************************************************\nAUTH FILE LINE 303\n NewRequestWithContext resp is:\n%v\n*****************************************************\n\n\n", resp)
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("could not get idbindtoken token, status: %v", resp.StatusCode)
 	}

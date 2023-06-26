@@ -25,6 +25,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v2"
 )
 
 // zone to set up test cluster in
@@ -62,7 +64,7 @@ func execCmd(command *exec.Cmd) error {
 // Replaces variables in an input template file and writes the result to an
 // output file.
 func replaceTemplate(templateFile string, destFile string) error {
-	pwd, err := os.Getwd()
+	pwd, err := os.Getwd() //	Fetching current working directory
 	if err != nil {
 		return err
 	}
@@ -195,7 +197,89 @@ func teardownTestSuite() {
 
 // Entry point for go test.
 func TestMain(m *testing.M) {
-	os.Exit(runTest(m))
+	// os.Exit(runTest(m))
+	withoutTokenStatus := runTest(m)
+	withTokenStatus := executeTest(m)
+	fmt.Printf("Exit Code when token is not passed from driver to provder is: %v", withoutTokenStatus)
+	fmt.Printf("Exit Code when token is passed from driver to provder is: %v", withTokenStatus)
+	os.Exit(withoutTokenStatus | withTokenStatus)
+}
+
+func executeTest(m *testing.M) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Test execution panic:", r)
+			code = 1
+		}
+		teardownTestSuite()
+	}()
+
+	updateTestSuiteSetup()
+	return m.Run()
+}
+
+func updateTestSuiteSetup() {
+
+	type MetadataStruct struct {
+		Name string `yaml:"name"`
+	}
+
+	type AudienceStruct struct {
+		Audience string `yaml:"audience"`
+	}
+
+	type SpecStruct struct {
+		PodInfoOnMount       bool             `yaml:"podInfoOnMount"`
+		AttachRequired       bool             `yaml:"attachRequired"`
+		VolumeLifecycleModes []string         `yaml:"volumeLifecycleModes"`
+		TokenRequests        []AudienceStruct `yaml:"tokenRequests"`
+	}
+
+	type Driver struct {
+		APIVersion string         `yaml:"apiVersion"`
+		Kind       string         `yaml:"kind"`
+		Metadata   MetadataStruct `yaml:"metadata"`
+		Spec       SpecStruct     `yaml:"spec"`
+	}
+
+	aud := AudienceStruct{
+		Audience: "secretmanager-csi-build.svc.id.goog",
+	}
+
+	csiDriver := Driver{
+		APIVersion: "storage.k8s.io/v1",
+		Kind:       "CSIDriver",
+		Metadata: MetadataStruct{
+			Name: "secrets-store.csi.k8s.io",
+		},
+		Spec: SpecStruct{
+			PodInfoOnMount:       true,
+			AttachRequired:       false,
+			VolumeLifecycleModes: []string{"Ephemeral"},
+			TokenRequests:        []AudienceStruct{aud},
+		},
+	}
+
+	yamlData, err := yaml.Marshal(&csiDriver)
+
+	if err != nil {
+		fmt.Printf("Error while Marshaling YAML file: %v", err)
+	}
+
+	fileName := "CSIDriver.yaml"
+	err = ioutil.WriteFile(fileName, yamlData, 0644)
+	if err != nil {
+		panic("Unable to create YAML file")
+	}
+
+	check(execCmd(exec.Command("kubectl", "apply", "--kubeconfig", f.kubeconfigFile,
+		"-f", fmt.Sprintf("https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/%s/deploy/rbac-secretproviderclass.yaml", f.secretStoreVersion),
+		"-f", fmt.Sprintf("https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/%s/deploy/rbac-secretprovidersyncing.yaml", f.secretStoreVersion),
+		"-f", fmt.Sprintf("./CSIDriver.yaml"),
+		"-f", fmt.Sprintf("https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/%s/deploy/secrets-store.csi.x-k8s.io_secretproviderclasses.yaml", f.secretStoreVersion),
+		"-f", fmt.Sprintf("https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/%s/deploy/secrets-store.csi.x-k8s.io_secretproviderclasspodstatuses.yaml", f.secretStoreVersion),
+		"-f", fmt.Sprintf("https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/%s/deploy/secrets-store-csi-driver.yaml", f.secretStoreVersion),
+	)))
 }
 
 // Handles setup/teardown test suite and runs test. Returns exit code.
