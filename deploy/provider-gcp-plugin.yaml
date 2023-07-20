@@ -68,10 +68,17 @@ spec:
         app: csi-secrets-store-provider-gcp
     spec:
       serviceAccountName: secrets-store-csi-driver-provider-gcp
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
       containers:
         - name: provider
           image: us-docker.pkg.dev/secretmanager-csi/secrets-store-csi-driver-provider-gcp/plugin@sha256:b7dde5ed536b2c6500c9237e14f6851cf8a2ff6d7a72656c3741be38e2cddf4d
           imagePullPolicy: IfNotPresent
+          securityContext:
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             requests:
               cpu: 50m
@@ -85,6 +92,11 @@ spec:
           volumeMounts:
             - mountPath: "/etc/kubernetes/secrets-store-csi-providers"
               name: providervol
+              readOnly: false
+              mountPropagation: None
+            - name: profiles
+              mountPath: "/profiles"
+              readOnly: true
           livenessProbe:
             failureThreshold: 3
             httpGet:
@@ -97,6 +109,9 @@ spec:
         - name: providervol
           hostPath:
             path: /etc/kubernetes/secrets-store-csi-providers
+        - name: profiles
+          configMap:
+            name: apparmor-profiles
       tolerations:
         - key: kubernetes.io/arch
           operator: Equal
